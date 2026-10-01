@@ -3863,7 +3863,7 @@ window.golf = {
   shoot(yaw, power) { CAM.yaw = yaw; if (canShoot()) shoot(power); },
   // Fast-forward a single shot without rendering. Returns where it ended up.
   sim({ from, yaw, power, t0, maxTime = 30, trace = false }) {
-    const ctx = GAME.ctx;
+    const ctx = GAME.ctx, savedSafe = GAME.ball.lastSafe.clone();
     GAME.timers = []; GAME.sink = null; GAME.hazardAnim = null;
     GAME.time = t0 ?? 0; resetKinematics(GAME.time);
     const start = from ? new V3(...from) : new V3(ctx.hole.tee[0], ctx.hole.tee[1] + BR + 0.002, ctx.hole.tee[2]);
@@ -3881,7 +3881,7 @@ window.golf = {
     const p = ballBody.position;
     const res = { result: GAME.state === 'sinking' ? 'holed' : GAME.state === 'hazard' ? 'hazard:' + GAME.lastHazard : GAME.state === 'ready' ? 'stopped' : 'timeout', pos: [p.x, p.y, p.z], t, gameTime: GAME.time, onStatic: !!(GAME.ball.support && GAME.ball.support.type === CANNON.Body.STATIC), path };
     GAME.simulating = false;
-    placeBall(start); GAME.state = 'ready'; GAME.strokes = 0;
+    placeBall(start); GAME.state = 'ready'; GAME.strokes = 0; GAME.ball.lastSafe.copy(savedSafe);
     return res;
   },
 };
