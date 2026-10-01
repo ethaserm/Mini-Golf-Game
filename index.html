@@ -433,7 +433,7 @@ const CONFIG = {
   CUP_PULL_RADIUS: 0.66,      // ~2x cup radius: suck-in zone
   CUP_PULL_STRENGTH: 4,
   CUP_PULL_MAX_SPEED: 1.8,    // only slow balls get pulled
-  CUP_CAPTURE_SPEED: 2.4,     // faster than this and the ball rolls over the cup
+  CUP_CAPTURE_SPEED: 3.4,     // faster than this (dead centre) and the ball rolls over the cup
 
   // --- features ---
   BOOST_SPEED: 9,
@@ -3500,18 +3500,22 @@ function ballPostStep(dt) {
   if (!sim && inSand && !B.inSand && relSpeed > 0.8) { AUDIO.sand(); FX.sand(p, 18); }
   if (!sim && inSand && relSpeed > 0.6) { B.sandTimer -= dt; if (B.sandTimer <= 0) { FX.sand(p, 3); B.sandTimer = 0.12; } }
   B.inSand = inSand;
-  // cup: slow enough → drop in; too fast → rattle over the lip
+  // cup: once the ball's centre is over the hole it drops unless it is moving too fast.
+  // Balls crossing near the rim cover a shorter chord, so they must be a bit slower.
   const cup = ctx.cup.pos, dCup = Math.hypot(cup.x - p.x, cup.z - p.z);
-  if (dCup < CONFIG.CUP_RADIUS - 0.04 && Math.abs(p.y - (cup.y + BR)) < 0.2) {
-    // dead-centre balls drop up to the capture speed; balls clipping the edge must be much slower
+  const atCupLevel = Math.abs(p.y - (cup.y + BR)) < 0.2;
+  if (dCup < CONFIG.CUP_RADIUS && atCupLevel) {
     const off = dCup / CONFIG.CUP_RADIUS;
-    if (relSpeed < CONFIG.CUP_CAPTURE_SPEED * (1 - off * off)) { holeBall(); return; }
+    if (relSpeed < CONFIG.CUP_CAPTURE_SPEED * Math.sqrt(1 - off * off)) { holeBall(); return; }
     if (B.lipCool <= 0) {
-      const a = (Math.random() < 0.5 ? -1 : 1) * (0.12 + Math.random() * 0.14), c = Math.cos(a), sn = Math.sin(a);
-      const vx = v.x * c - v.z * sn, vz = v.x * sn + v.z * c;
-      v.x = vx * 0.9; v.z = vz * 0.9; B.lipCool = 0.4;
+      // too fast: it rolls straight over, rattling the far edge and losing a little speed
+      v.x *= 0.88; v.z *= 0.88; B.lipCool = 0.35;
       if (!sim) AUDIO.lipout();
     }
+  } else if (dCup < CONFIG.CUP_RADIUS + BR * 0.6 && atCupLevel && relSpeed < 0.6 && B.grounded) {
+    // dying on the lip with the ball hanging over the hole: let it topple in
+    const a = 3.5 * dt;
+    v.x += ((cup.x - p.x) / dCup) * a; v.z += ((cup.z - p.z) / dCup) * a;
   }
   // resting
   if (GAME.state === 'rolling') {
