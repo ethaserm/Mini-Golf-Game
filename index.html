@@ -87,7 +87,7 @@
     box-shadow: 0 7px 0 #c46b00, 0 12px 20px rgba(0,0,0,.35);
   }
   #shootBtn.pressed { transform: translateY(5px) scale(.96); box-shadow: 0 2px 0 #c46b00, 0 6px 12px rgba(0,0,0,.3); }
-  #shootBtn:disabled { filter: grayscale(.85) brightness(.85); }
+  #shootBtn.busy { filter: grayscale(.7) brightness(.9); opacity: .7; }
   #resetBtn {
     position: absolute; left: calc(var(--sal) + var(--gutter)); bottom: calc(var(--sab) + 22px);
     width: 64px; height: 64px; border-radius: 50%; border: 4px solid #fff; padding: 0;
@@ -101,6 +101,7 @@
     #powerWrap { width: calc(100% - 2 * var(--gutter)); bottom: calc(var(--sab) + 14px); }
     #shootBtn { bottom: calc(var(--sab) + 14px + var(--bar-h) + 22px); }
     #resetBtn { bottom: calc(var(--sab) + 14px + var(--bar-h) + 34px); }
+    #hint { top: calc(var(--sat) + 150px); }
   }
 
   #powerLabel {
@@ -1349,7 +1350,23 @@ function buildLiquid(p, ctx, kind) {
     rock.receiveShadow = true; ctx.group.add(rock);
   }
   const R = CONFIG.BALL_RADIUS;
-  ctx.hazards.push({ kind, region: makeRegion(p.shape), yTrig: y + R + (p.pit ? 0.02 : 0.15), surfaceY: y + 0.012 });
+  const hz = { kind, region: makeRegion(p.shape), yTrig: y + R + (p.pit ? 0.02 : 0.15), surfaceY: y + (p.pit ? 0 : 0.012) };
+  ctx.hazards.push(hz);
+  if (kind === 'goo') {
+    // glowing bubbles popping on the surface
+    const b = p.shape.r !== undefined ? { minX: p.shape.x - p.shape.r, maxX: p.shape.x + p.shape.r, minZ: p.shape.z - p.shape.r, maxZ: p.shape.z + p.shape.r } : polyBounds(rectPts(p.shape));
+    const col = new THREE.Color('#b6ff5a');
+    let acc = 0;
+    ctx.updaters.push((t, dt) => {
+      acc += dt;
+      const rate = 0.12 / Math.max(1, ((b.maxX - b.minX) * (b.maxZ - b.minZ)) / 6);
+      while (acc > rate) {
+        acc -= rate;
+        const x = lerp(b.minX, b.maxX, Math.random()), z = lerp(b.minZ, b.maxZ, Math.random());
+        if (hz.region.contains(x, z)) glowFX.spawn(x, hz.surfaceY + 0.02, z, 0, 0.35 + Math.random() * 0.3, 0, col, 0.1 + Math.random() * 0.12, 0.6 + Math.random() * 0.5, 0, 0, 0.6, 0.8);
+      }
+    });
+  }
 }
 BUILDERS.water = (p, ctx) => buildLiquid(p, ctx, 'water');
 BUILDERS.goo = (p, ctx) => buildLiquid(p, ctx, 'goo');
@@ -1381,6 +1398,16 @@ BUILDERS.boost = (p, ctx) => {
   top.position.set(p.x, y + 0.018, p.z); top.rotation.y = yaw;
   ctx.group.add(base, top);
   ctx.boosts.push({ region: makeRegion({ x: p.x, z: p.z, w, d: l, yaw }), dir: fwdFromYaw(yaw), y, x: p.x, z: p.z, speed: p.speed ?? CONFIG.BOOST_SPEED });
+  const sparkCol = new THREE.Color(p.color || ctx.theme.boostColor).multiplyScalar(1.5), dir = fwdFromYaw(yaw);
+  let sAcc = 0;
+  ctx.updaters.push((t, dt) => {
+    sAcc += dt;
+    while (sAcc > 0.09) {
+      sAcc -= 0.09;
+      const a = (Math.random() - 0.5) * w * 0.8, b = (Math.random() - 0.5) * l * 0.8;
+      glowFX.spawn(p.x - dir.z * a + dir.x * b, y + 0.05, p.z + dir.x * a + dir.z * b, dir.x * 1.2, 0.5 + Math.random() * 0.6, dir.z * 1.2, sparkCol, 0.06 + Math.random() * 0.05, 0.5, 0, 0.5);
+    }
+  });
 };
 
 // Mushroom bumper: super bouncy stem, glowing spotted cap
@@ -1395,16 +1422,18 @@ function buildMushroomVisual(r, capCol, glowCol, emissive = 0.9) {
   const gill = new THREE.Mesh(new THREE.CircleGeometry(r * 1.78, 28).rotateX(Math.PI / 2), new THREE.MeshStandardMaterial({ color: '#ffe9c9', emissive: '#ffb3d9', emissiveIntensity: 0.35 }));
   gill.position.y = 0.561;
   const spotMat = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffffff', emissiveIntensity: 0.6, roughness: 0.5 });
-  const spotGeo = new THREE.SphereGeometry(r * 0.26, 10, 6);
-  const R = r * 1.8;
+  // white spots, merged into a single mesh
+  const R = r * 1.8, spotParts = [];
   for (let i = 0; i < 8; i++) {
     const th = i < 1 ? 0 : 0.55 + (i % 2) * 0.35, ph = (i / 7) * TAU + i;
     const n = new V3(Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph));
-    const s = new THREE.Mesh(spotGeo, spotMat);
-    s.position.set(n.x * R, 0.56 + n.y * R * 0.7, n.z * R);
-    s.scale.set(1, 0.35, 1); s.lookAt(s.position.clone().add(new V3(n.x, n.y * 0.7, n.z))); s.rotateX(Math.PI / 2);
-    g.add(s);
+    const sg = new THREE.SphereGeometry(r * 0.26, 10, 6);
+    sg.scale(1, 0.35, 1);
+    sg.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), new V3(n.x, n.y * 0.7, n.z).normalize()));
+    sg.translate(n.x * R, 0.56 + n.y * R * 0.7, n.z * R);
+    spotParts.push(sg);
   }
+  g.add(new THREE.Mesh(mergeAll(spotParts), spotMat));
   const ring = new THREE.Mesh(new THREE.TorusGeometry(r * 1.05, 0.05, 8, 32).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: new THREE.Color(glowCol).multiplyScalar(2.2) }));
   ring.position.y = 0.06;
   g.add(stem, cap, gill, ring);
@@ -1536,7 +1565,7 @@ BUILDERS.spinner = (p, ctx) => {
   const vis = new THREE.Group();
   const barGeo = tintByNormal(new RoundedBoxGeometry(len, 0.34, 0.2, 2, 0.08), ctx.theme.rail.top, ctx.theme.rail.side);
   const barMesh = new THREE.Mesh(barGeo, ctx.mats.rail); barMesh.position.y = -0.04; barMesh.castShadow = true;
-  const stripeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(ctx.theme.accent).multiplyScalar(2.2) });
+  const stripeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(ctx.theme.accent).multiplyScalar(1.4) });
   for (const sx of [-1, 1]) {
     const tip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.36, 0.22), stripeMat);
     tip.position.set(sx * (len / 2 - 0.2), -0.04, 0); vis.add(tip);
@@ -1607,9 +1636,9 @@ BUILDERS.teleporter = (p, ctx) => {
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     }));
     disc.position.copy(e.pos).y += 0.02;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.58, 0.06, 10, 40).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(2.4) }));
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.58, 0.06, 10, 40).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(1.5) }));
     ring.position.copy(e.pos).y += 0.03;
-    const arch = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.07, 10, 32, Math.PI), new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(2.0) }));
+    const arch = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.07, 10, 32, Math.PI), new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(1.3) }));
     arch.position.copy(e.pos); arch.rotation.y = e.yaw;
     // exit arrow on the floor
     const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.32, 3).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(2.2) }));
@@ -1774,6 +1803,15 @@ function buildSign(ctx, sign, holeNum) {
   const face = new THREE.Mesh(new THREE.PlaneGeometry(1.36, 0.68), new THREE.MeshStandardMaterial({ map: tex, transparent: true, roughness: 0.9, emissive: '#ffffff', emissiveMap: tex, emissiveIntensity: ctx.theme.signGlow || 0.08 }));
   face.position.set(0, y + 1.55, 0.135);
   g.add(post, board, face);
+  // fade the sign out when the camera passes close by, so it never blocks the view
+  const mats = [woodMat, board.material, face.material];
+  mats.forEach(m => { m.transparent = true; });
+  ctx.updaters.push(() => {
+    const d = Math.hypot(camera.position.x - x, camera.position.z - z);
+    const o = clamp((d - 2.2) / 2.5, 0, 1);
+    for (const m of mats) { m.opacity = o; m.depthWrite = o > 0.98; }
+    g.visible = o > 0.01;
+  });
 }
 
 /* =====================================================================
@@ -1833,7 +1871,7 @@ function makeThemeMaterials(theme) {
     sand: makeSurfaceMaterial({ a: '#f4d891', checker: 1e4, grain: 0.5, patch: 0.15, grainScale: 0.55, caustics: theme.caustics }),
     sandLip: new THREE.MeshStandardMaterial({ color: '#d8b56a', roughness: 1, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }),
     water: makeLiquidMaterial({ color: '#58c8ff', deep: '#1f6fd1', opacity: 0.9 }),
-    goo: makeLiquidMaterial({ color: '#6fe83a', deep: '#167a2c', emissive: '#3dff5a', emissiveAmt: 0.32, goo: true, opacity: 0.96 }),
+    goo: makeLiquidMaterial({ color: '#a8ff3a', deep: '#0f5a24', emissive: '#4dff3a', emissiveAmt: 0.45, goo: true, opacity: 0.97 }),
     pebble: new THREE.MeshStandardMaterial({ color: '#cfc7bb', roughness: 0.9, flatShading: true }),
   };
 }
@@ -2150,7 +2188,7 @@ THEMES.neon.decorate = (ctx, rng, density) => {
   groundPlane(ctx, T, makeSurfaceMaterial({ a: T.groundA, checker: 1e4, grain: 0.4, patch: 0.5, grainScale: 0.2, speck: '#b04dff' }));
   // giant glowing mushrooms
   const stems = [], caps = [], spots = [];
-  for (const p of scatter(ctx, rng, Math.round(20 * density), 3, 42, 3)) {
+  for (const p of scatter(ctx, rng, Math.round(20 * density), 6, 42, 6)) {
     const h = 3 + rng() * 6, cr = 1.4 + h * 0.28, tilt = (rng() - 0.5) * 0.2, ry = rng() * TAU;
     stems.push(mat4(p.x, gy, p.z, 0.6 + h * 0.06, h, 0.6 + h * 0.06, ry, tilt));
     caps.push(mat4(p.x, gy + h, p.z, cr, cr * 0.62, cr, ry, tilt));
@@ -2372,7 +2410,7 @@ const HOLES = [
    ===================================================================== */
 buildTextures();
 const BR = CONFIG.BALL_RADIUS;
-const ballMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.32, metalness: 0, bumpMap: TEX.dimple, bumpScale: 1.2 });
+const ballMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.32, metalness: 0, bumpMap: TEX.dimple, bumpScale: 1.2, emissive: '#ffffff', emissiveIntensity: 0.14 });
 const ballGeo = new THREE.SphereGeometry(BR, 36, 24);
 const ballMesh = new THREE.Mesh(ballGeo, ballMat);
 ballMesh.castShadow = true;
@@ -3656,6 +3694,7 @@ function syncVisuals(alpha, dt) {
     ringGroup.position.copy(ballMesh.position).addScaledVector(B.normal, -BR + 0.012);
     ringGroup.quaternion.setFromUnitVectors(_P.set(0, 1, 0), B.normal);
   }
+  shootBtn.classList.toggle('busy', !ready);
   // YOU label
   youSprite.visible = CAM.mode === 'play' && (st === 'ready' || st === 'rolling');
   youSprite.position.copy(ballMesh.position); youSprite.position.y += 0.6 + Math.sin(SHARED.time.value * 3) * 0.03;
@@ -3800,7 +3839,10 @@ window.golf = {
   get state() { return GAME.state; },
   get strokes() { return GAME.strokes; },
   get ball() { const p = ballBody.position; return [p.x, p.y, p.z]; },
+  get time() { return GAME.time; },
   load(i) { loadHole(i, {}); },
+  // Take a real (rendered) shot: yaw in radians, power 0-100
+  shoot(yaw, power) { CAM.yaw = yaw; if (canShoot()) shoot(power); },
   // Fast-forward a single shot without rendering. Returns where it ended up.
   sim({ from, yaw, power, t0, maxTime = 30, trace = false }) {
     const ctx = GAME.ctx;
